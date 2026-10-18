@@ -1,0 +1,289 @@
+# HIKARI SENSE local stack — PS 26069.
+# Synthetic demo data is labelled DEMO.
+
+name: hikari-sense
+
+services:
+
+  # ============================================================
+  # PostgreSQL + PostGIS
+  # ============================================================
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: hikari
+      POSTGRES_PASSWORD: hikari
+      POSTGRES_DB: hikari
+    ports:
+      - "5433:5432"
+    volumes:
+      - hikari_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hikari"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+
+  # ============================================================
+  # Redis
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+
+  # ============================================================
+  # Apache Kafka — KRaft, single-node development setup
+  # ============================================================
+  kafka:
+    image: apache/kafka:3.7.1
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 0
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes:
+      - hikari_kafka:/var/lib/kafka/data
+
+
+  # ============================================================
+  # SeaweedFS — S3-compatible object storage
+  # ============================================================
+  minio:
+    image: chrislusf/seaweedfs:latest
+    command:
+      - mini
+      - -dir=/data
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      S3_BUCKET: media
+    ports:
+      - "8333:8333"
+      - "9333:9333"
+      - "8888:8888"
+    volumes:
+      - hikari_minio:/data
+
+
+  # ============================================================
+  # Apache Flink — JobManager
+  # ============================================================
+  flink-jobmanager:
+    image: flink:1.19-scala_2.12-java17
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:8081/ >/dev/null || exit 1"
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+
+  # ============================================================
+  # Apache Flink — TaskManager
+  # ============================================================
+  flink-taskmanager:
+    image: flink:1.19-scala_2.12-java17
+    command: taskmanager
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+
+
+  # ============================================================
+  # HIKARI SENSE FastAPI Backend
+  # ============================================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      minio:
+        condition: service_started
+      flink-jobmanager:
+        condition: service_healthy
+
+    environment:
+      ENVIRONMENT: development
+
+      DATABASE_URL: postgresql+psycopg://hikari:hikari@postgres:5432/hikari
+      TEST_DATABASE_URL: postgresql+psycopg://hikari:hikari@postgres:5432/hikari_test
+
+      REDIS_URL: redis://redis:6379/0
+
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+
+      # S3-compatible storage
+      MINIO_ENDPOINT: minio:8333
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: media
+
+      JWT_SECRET: change-me-dev-only
+      JWT_ISSUER: hikari-sense
+      JWT_AUDIENCE: hikari-sense-api
+
+      CORS_ORIGINS: http://localhost:8080,http://localhost:5173,http://127.0.0.1:8080,http://127.0.0.1:5173
+
+      PROMETHEUS_ENABLED: "true"
+
+    ports:
+      - "8000:8000"
+
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/app
+
+    volumes:
+      - .:/app
+
+  processing-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://hikari:hikari@postgres:5432/hikari
+      TEST_DATABASE_URL: postgresql+psycopg://hikari:hikari@postgres:5432/hikari_test
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    volumes:
+      - .:/app
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - app.workers.processing_worker
+
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      processing-worker:
+        condition: service_started
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://hikari:hikari@postgres:5432/hikari
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      INGESTION_CONNECTORS: "${INGESTION_CONNECTORS:-SRC-OPEN-METEO,SRC-SACHET,SRC-FIRMS}"
+      INGESTION_POLL_SECONDS: "900"
+      INGESTION_START_DELAY_SECONDS: "15"
+      SACHET_FEED_URL: "${SACHET_FEED_URL:-https://sachet.ndma.gov.in/cap_public_website/rss/rss_india.xml}"
+      FIRMS_MAP_KEY: "${FIRMS_MAP_KEY:-}"
+    volumes:
+      - .:/app
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - app.workers.ingestion_worker
+
+
+  # ============================================================
+  # Prometheus — optional observability
+  # ============================================================
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles:
+      - observability
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+
+  # ============================================================
+  # Grafana — optional observability
+  # ============================================================
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles:
+      - observability
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - hikari_grafana:/var/lib/grafana
+
+
+  # ============================================================
+  # MLflow — optional observability / ML tracking
+  # ============================================================
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    profiles:
+      - observability
+    ports:
+      - "5001:5000"
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+
+
+# ==============================================================
+# Persistent volumes
+# ==============================================================
+volumes:
+  hikari_pg:
+  hikari_kafka:
+  hikari_minio:
+  hikari_grafana:
