@@ -286,3 +286,8 @@
     arrive 0.6s ease-out,
     none;
 }
+
+/* Hide the Lovable badge injected into published pages. */
+#lovable-badge {
+  display: none !important;
+}
