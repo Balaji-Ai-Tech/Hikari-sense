@@ -1,0 +1,22 @@
+name: hikari-dev-local-db
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: hikari_dev
+      POSTGRES_USER: hikari_dev
+      POSTGRES_PASSWORD: ${HIKARI_DEV_DB_PASSWORD:?Set HIKARI_DEV_DB_PASSWORD in the current PowerShell session}
+    ports:
+      - "127.0.0.1:5544:5432"
+    volumes:
+      - hikari_dev_local_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hikari_dev -d hikari_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  hikari_dev_local_pg:
+    name: hikari_dev_local_pg

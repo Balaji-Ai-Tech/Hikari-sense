@@ -1,0 +1,88 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+.output
+.vinxi
+.tanstack/**
+.nitro
+*.local
+
+# Wrangler / Cloudflare
+.wrangler/
+.dev.vars
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Local secrets and credentials
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+.dev.vars
+
+# Local databases and database exports
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+*.dump
+*.bak
+
+# Generated frameworks and deployment output
+.next/
+.vercel/
+coverage/
+build/
+
+# Runtime logs
+*.log
+
+# Private or user-submitted media - review before tracking
+private_uploads/
+uploads/
+media/private/
+.data/
+
+# Local runtime data
+.data/
+.pytest_cache/
